@@ -1,0 +1,163 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum MemberRole {
+  OWNER
+  ADMIN
+  BOOKKEEPER
+  MEMBER
+}
+
+enum TransactionType {
+  DEBIT
+  CREDIT
+}
+
+enum ReceiptSource {
+  EMAIL
+  WEB_UPLOAD
+  SLACK
+  WHATSAPP
+}
+
+enum ReceiptCategory {
+  SOFTWARE
+  MEALS
+  TRAVEL
+  OFFICE
+  CONTRACTOR
+  EQUIPMENT
+  OTHER
+}
+
+enum ReceiptStatus {
+  PROCESSING
+  PARSED
+  MATCHED
+  UNMATCHED
+  FLAGGED
+}
+
+enum MatchType {
+  EXACT_AUTOMATIC
+  FUZZY_CONFIRMED
+  MANUAL_OVERRIDE
+}
+
+model User {
+  // Must equal the Supabase Auth user UUID; never generate a separate identity.
+  id              String                 @id @db.Uuid
+  email           String                 @unique
+  name            String?
+  avatarUrl       String?
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+  memberships     Membership[]
+  receipts        Receipt[]
+  reconciliations ReconciliationRecord[]
+}
+
+model Organization {
+  id                String                 @id @default(uuid()) @db.Uuid
+  name              String
+  slug              String                 @unique
+  inboundEmailAlias String                 @unique
+  baseCurrency      String                 @default("USD") @db.Char(3)
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+  memberships       Membership[]
+  bankTransactions  BankTransaction[]
+  receipts          Receipt[]
+  reconciliations   ReconciliationRecord[]
+}
+
+model Membership {
+  id           String       @id @default(uuid()) @db.Uuid
+  userId       String       @db.Uuid
+  orgId        String       @db.Uuid
+  role         MemberRole   @default(MEMBER)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, orgId])
+  @@index([orgId])
+}
+
+model BankTransaction {
+  id               String                @id @default(uuid()) @db.Uuid
+  orgId            String                @db.Uuid
+  transactionDate  DateTime              @db.Date
+  rawDescription   String
+  counterpartyName String
+  amount           Decimal               @db.Decimal(19, 4)
+  type             TransactionType
+  currency         String                @default("USD") @db.Char(3)
+  isReconciled     Boolean               @default(false)
+  notes            String?
+  // Stable import identity allows createMany(skipDuplicates) to detect retries.
+  importKey        String?
+  createdAt        DateTime              @default(now())
+  organization     Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  reconciliation   ReconciliationRecord?
+
+  @@unique([id, orgId])
+  @@unique([orgId, importKey])
+  @@index([orgId, transactionDate])
+  @@index([orgId, amount])
+}
+
+model Receipt {
+  id                String                @id @default(uuid()) @db.Uuid
+  orgId             String                @db.Uuid
+  uploadedByUserId  String?               @db.Uuid
+  source            ReceiptSource
+  // Store a private bucket object path; issue short-lived signed URLs on demand.
+  rawFileUrl        String
+  mimeType          String
+  fileSizeBytes     Int
+  vendorName        String?
+  transactionDate   DateTime?             @db.Date
+  totalAmount       Decimal?              @db.Decimal(19, 4)
+  taxAmount         Decimal?              @db.Decimal(19, 4)
+  currency          String                @default("USD") @db.Char(3)
+  category          ReceiptCategory       @default(OTHER)
+  confidenceScore   Float                 @default(0)
+  status            ReceiptStatus         @default(PROCESSING)
+  rawExtractionJson Json?
+  notes             String?
+  createdAt         DateTime              @default(now())
+  organization      Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  uploadedBy        User?                 @relation(fields: [uploadedByUserId], references: [id], onDelete: SetNull)
+  reconciliation    ReconciliationRecord?
+
+  @@unique([id, orgId])
+  @@index([orgId, status])
+  @@index([orgId, totalAmount])
+  @@index([uploadedByUserId])
+}
+
+model ReconciliationRecord {
+  id                   String          @id @default(uuid()) @db.Uuid
+  orgId                String          @db.Uuid
+  bankTransactionId    String          @unique @db.Uuid
+  receiptId            String          @unique @db.Uuid
+  matchType            MatchType
+  confidenceScore      Float
+  reconciledByUserId   String?         @db.Uuid
+  reconciledAt         DateTime        @default(now())
+  notes                String?
+  organization         Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  bankTransaction      BankTransaction @relation(fields: [bankTransactionId, orgId], references: [id, orgId], onDelete: NoAction, onUpdate: NoAction)
+  receipt              Receipt         @relation(fields: [receiptId, orgId], references: [id, orgId], onDelete: NoAction, onUpdate: NoAction)
+  reconciledBy         User?           @relation(fields: [reconciledByUserId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, reconciledAt])
+  @@index([reconciledByUserId])
+}
