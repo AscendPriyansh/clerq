@@ -1,0 +1,13 @@
+import { cleanCounterpartyName, detectColumns, parseDate, parseMoney } from "./csv-mapper";
+import { parseStatement } from "./statement";
+const mapping = { dateCol: "Date", descriptionCol: "Description", amountCol: "Amount", creditCol: null };
+const options = { currency: "AUD", dateOrder: "DMY" as const, negativeIsCredit: true };
+test("ambiguous dates require manual mapping", () => expect(detectColumns(["Date", "Posting Date", "Description", "Amount"]).dateCol).toBeNull());
+test("debit and credit columns detected separately", () => expect(detectColumns(["Date", "Description", "Debit amount", "Credit amount"])).toEqual({ dateCol: "Date", descriptionCol: "Description", amountCol: "Debit amount", creditCol: "Credit amount" }));
+test("clean bank narration without deleting merchant names", () => expect(cleanCounterpartyName("POS PURCHASE MICROSOFT 12345ABC LLC")).toBe("Microsoft"));
+test("amount parser handles currency separators and parentheses", () => expect(parseMoney("($1,234.50)")).toEqual({ amount: "1234.50", negative: true }));
+test("amount parser rejects malformed numeric strings", () => expect(() => parseMoney("12,34.56")).toThrow());
+test("explicit order resolves ambiguous dates", () => { expect(parseDate("01/02/2026", "DMY").getUTCMonth()).toBe(1); expect(parseDate("01/02/2026", "MDY").getUTCMonth()).toBe(0); });
+test("CSV rows use requested sign convention", () => { const result = parseStatement("Date,Description,Amount\n2026-01-01,Stripe,-10\n2026-01-02,Zoom,20", mapping, options); expect(result.rows.map(row => row.type)).toEqual(["CREDIT", "DEBIT"]); });
+test("reimport keys are stable, identical legitimate rows remain distinct", () => { const text = "Date,Description,Amount\n2026-01-01,Stripe,10\n2026-01-01,Stripe,10"; const a = parseStatement(text, mapping, options), b = parseStatement(text, mapping, options); expect(a.rows.map(row => row.importKey)).toEqual(b.rows.map(row => row.importKey)); expect(a.rows[0].importKey).not.toBe(a.rows[1].importKey); });
+test("invalid rows are reported instead of coerced", () => { const parsed = parseStatement("Date,Description,Amount\n31/02/2026,Stripe,10", mapping, options); expect(parsed.rows).toHaveLength(0); expect(parsed.errors[0].row).toBe(2); });

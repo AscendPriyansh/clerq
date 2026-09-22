@@ -1,0 +1,138 @@
+import assert from "node:assert/strict";
+import { randomUUID, randomBytes, createHmac } from "node:crypto";
+import { spawn } from "node:child_process";
+import { loadEnvConfig } from "@next/env";
+import { createClient } from "@supabase/supabase-js";
+import { createServerClient } from "@supabase/ssr";
+import { invoicePdf } from "./fixtures";
+loadEnvConfig(process.cwd());
+
+async function main() {
+  const { prisma: db } = await import("../lib/prisma");
+  const { storeReceipt } = await import("../lib/receipts/service");
+  const { runReconciliation, commitMatch, getSuggestions } = await import("../lib/reconciliation/matcher");
+  const { processNextJob } = await import("../lib/jobs/processor");
+  const { parseStatement } = await import("../lib/parser/statement");
+  const { enqueue } = await import("../lib/jobs/queue");
+  const { default: JSZip } = await import("jszip");
+  const { default: Papa } = await import("papaparse");
+  const admin = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, { auth: { persistSession: false, autoRefreshToken: false } });
+  const suffix = randomUUID();
+  let userId: string | undefined;
+  const orgIds: string[] = [], storagePaths: string[] = [], jobKeys: string[] = [];
+  const base = "http://127.0.0.1:3002";
+  const signingBytes = randomBytes(32);
+  const signingSecret = `whsec_${signingBytes.toString("base64")}`;
+  const server = spawn(process.execPath, ["node_modules/next/dist/bin/next", "start", "--hostname", "127.0.0.1", "--port", "3002"], { env: { ...process.env, NODE_ENV: "production", RESEND_WEBHOOK_SECRET: signingSecret }, stdio: "ignore", windowsHide: true });
+  try {
+    let ready = false;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (server.exitCode !== null) throw new Error("Integration server exited before startup.");
+      try { const response = await fetch(`${base}/register`, { signal: AbortSignal.timeout(1000) }); if (response.status === 200) { ready = true; break; } } catch {}
+      await new Promise(resolve => setTimeout(resolve, 300));
+    }
+    assert.ok(ready, "Production integration server started");
+    const email = `clerq-workflow-${suffix}@example.test`, password = `${randomUUID()}aA9!`;
+    const created = await admin.auth.admin.createUser({ email, password, email_confirm: true });
+    if (created.error || !created.data.user) throw new Error("TEST_AUTH_CREATE_FAILED");
+    userId = created.data.user.id;
+    await db.user.create({ data: { id: userId, email } });
+    const org = await db.organization.create({ data: { name: "Workflow test", slug: `workflow-${suffix}`, memberships: { create: { userId, role: "OWNER" } } } }); orgIds.push(org.id);
+    const otherOrg = await db.organization.create({ data: { name: "Other tenant test", slug: `other-${suffix}` } }); orgIds.push(otherOrg.id);
+    const date = new Date().toISOString().slice(0, 10);
+    const pdf = invoicePdf("Stripe", "100.00", date);
+    const receipt = await storeReceipt({ buffer: pdf, mimeType: "application/pdf", orgId: org.id, source: "WEB_UPLOAD", userId, ingestionKey: `test:${suffix}` });
+    storagePaths.push(receipt.rawFileUrl); jobKeys.push(`parse:${receipt.id}`);
+    const duplicate = await storeReceipt({ buffer: pdf, mimeType: "application/pdf", orgId: org.id, source: "WEB_UPLOAD", userId, ingestionKey: `test:${suffix}` });
+    assert.equal(duplicate.id, receipt.id);
+    assert.equal(await db.ingestionJob.count({ where: { key: `parse:${receipt.id}` } }), 1);
+    console.log("PASS private receipt storage, duplicate handling and durable parse job");
+    await db.ingestionJob.update({ where: { key: `parse:${receipt.id}` }, data: { status: "COMPLETED" } });
+    await db.receipt.update({ where: { id: receipt.id }, data: { vendorName: "Stripe", transactionDate: new Date(date), totalAmount: "100", taxAmount: "0", confidenceScore: 1, currency: "USD", category: "SOFTWARE", status: "UNMATCHED" } });
+    const parsed = parseStatement(`Date,Description,Amount\n${date},Stripe,100\n${date},Different vendor,900`, { dateCol: "Date", descriptionCol: "Description", amountCol: "Amount", creditCol: null }, { dateOrder: "DMY", currency: "USD", negativeIsCredit: true });
+    const first = await db.bankTransaction.createMany({ data: parsed.rows.map(row => ({ ...row, orgId: org.id })), skipDuplicates: true });
+    const second = await db.bankTransaction.createMany({ data: parsed.rows.map(row => ({ ...row, orgId: org.id })), skipDuplicates: true });
+    assert.equal(first.count, 2); assert.equal(second.count, 0);
+    console.log("PASS CSV decimal import and duplicate reimport");
+    const results = await Promise.all([runReconciliation(org.id), runReconciliation(org.id)]);
+    assert.equal(results.reduce((sum, result) => sum + result.exactMatches, 0), 1);
+    assert.equal(await db.reconciliationRecord.count({ where: { orgId: org.id } }), 1);
+    assert.equal((await db.reconciliationRecord.findFirstOrThrow({ where: { orgId: org.id } })).matchType, "EXACT_AUTOMATIC");
+    assert.equal((await db.receipt.findUniqueOrThrow({ where: { id: receipt.id } })).status, "MATCHED");
+    console.log("PASS concurrent reconciliation creates exactly one atomic match");
+    const foreignReceipt = await db.receipt.create({ data: { orgId: otherOrg.id, source: "WEB_UPLOAD", rawFileUrl: `${otherOrg.id}/test.pdf`, mimeType: "application/pdf", fileSizeBytes: 1, vendorName: "Different vendor", transactionDate: new Date(date), totalAmount: "900", currency: "USD", confidenceScore: 1, status: "UNMATCHED" } });
+    const bank = await db.bankTransaction.findFirstOrThrow({ where: { orgId: org.id, isReconciled: false } });
+    await assert.rejects(commitMatch({ orgId: org.id, userId, receiptId: foreignReceipt.id, bankTransactionId: bank.id, manual: true }));
+    console.log("PASS cross-tenant manual match rejected");
+    const jobKey = `fixture:${suffix}`; jobKeys.push(jobKey);
+    await Promise.all([enqueue("EMAIL_INGEST", jobKey, { email_id: suffix }), enqueue("EMAIL_INGEST", jobKey, { email_id: suffix })]);
+    assert.equal(await db.ingestionJob.count({ where: { key: jobKey } }), 1);
+    console.log("PASS duplicate webhook jobs are idempotent");
+    const jar = new Map<string, string>();
+    const auth = createServerClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, { cookies: { getAll: () => [...jar].map(([name, value]) => ({ name, value })), setAll: cookies => cookies.forEach(({ name, value }) => jar.set(name, value)) } });
+    const login = await auth.auth.signInWithPassword({ email, password }); assert.equal(login.error, null);
+    const headers = { Cookie: [...jar].map(([name, value]) => `${name}=${value}`).join("; ") };
+    const form = new FormData(); form.set("orgSlug", org.slug); form.set("file", new File([new Uint8Array(invoicePdf("Zoom", "20", date))], "receipt.pdf", { type: "application/pdf" }));
+    const upload = await fetch(`${base}/api/ai/parse-receipt`, { method: "POST", headers: { ...headers, Origin: base }, body: form });
+    assert.equal(upload.status, 202);
+    const uploaded = await upload.json();
+    const uploadedReceipt = await db.receipt.findUniqueOrThrow({ where: { id: uploaded.receiptId } });
+    storagePaths.push(uploadedReceipt.rawFileUrl); jobKeys.push(`parse:${uploadedReceipt.id}`);
+    const reupload = await fetch(`${base}/api/ai/parse-receipt`, { method: "POST", headers: { ...headers, Origin: base }, body: form });
+    assert.equal((await reupload.json()).receiptId, uploadedReceipt.id);
+    console.log("PASS authenticated multipart upload, HTTP 202 queue response and duplicate upload");
+    const fuzzyReceipt = await storeReceipt({ buffer: invoicePdf("Stripe Payments", "50.01", date), mimeType: "application/pdf", orgId: org.id, source: "WEB_UPLOAD", userId, ingestionKey: `fuzzy:${suffix}` });
+    storagePaths.push(fuzzyReceipt.rawFileUrl); jobKeys.push(`parse:${fuzzyReceipt.id}`, `reconcile:${fuzzyReceipt.id}`);
+    const parseJob = await db.ingestionJob.findUniqueOrThrow({ where: { key: `parse:${fuzzyReceipt.id}` } });
+    assert.ok(await processNextJob(parseJob.id));
+    const extractedReceipt = await db.receipt.findUniqueOrThrow({ where: { id: fuzzyReceipt.id } });
+    assert.equal(extractedReceipt.totalAmount?.toString(), "50.01", "Worker parsed the receipt total");
+    assert.equal((await db.ingestionJob.findUniqueOrThrow({ where: { id: parseJob.id } })).status, "COMPLETED");
+    const fuzzyDate = new Date(date); fuzzyDate.setUTCDate(fuzzyDate.getUTCDate() + 2);
+    const fuzzyBank = await db.bankTransaction.create({ data: { orgId: org.id, transactionDate: fuzzyDate, rawDescription: "Stripe", counterpartyName: "Stripe", amount: "50", type: "DEBIT", currency: "USD" } });
+    const matchJob = await db.ingestionJob.findUniqueOrThrow({ where: { key: `reconcile:${fuzzyReceipt.id}` } });
+    await processNextJob(matchJob.id);
+    assert.ok((await getSuggestions(org.id)).some(pair => pair.receiptId === fuzzyReceipt.id && pair.bankTransactionId === fuzzyBank.id));
+    const confirmedId = await commitMatch({ orgId: org.id, userId, receiptId: fuzzyReceipt.id, bankTransactionId: fuzzyBank.id, manual: false });
+    assert.equal((await db.reconciliationRecord.findUniqueOrThrow({ where: { id: confirmedId } })).matchType, "FUZZY_CONFIRMED");
+    console.log("PASS durable worker extraction, queued reconciliation and fuzzy confirmation");
+    await db.ingestionJob.update({ where: { key: `parse:${uploadedReceipt.id}` }, data: { status: "COMPLETED" } });
+    await db.receipt.update({ where: { id: uploadedReceipt.id }, data: { vendorName: "Zoom", transactionDate: new Date(date), totalAmount: "20", currency: "USD", confidenceScore: 1, status: "UNMATCHED" } });
+    const manualId = await commitMatch({ orgId: org.id, userId, receiptId: uploadedReceipt.id, bankTransactionId: bank.id, manual: true, notes: "Synthetic test of a deliberate manual override" });
+    assert.equal((await db.reconciliationRecord.findUniqueOrThrow({ where: { id: manualId } })).matchType, "MANUAL_OVERRIDE");
+    console.log("PASS same-tenant manual override");
+    const payload = JSON.stringify({ type: "email.received", data: { email_id: suffix, to: ["test@example.test"], attachments: [] } });
+    const timestamp = Math.floor(Date.now() / 1000).toString(), eventId = `msg_${suffix}`;
+    const signature = createHmac("sha256", signingBytes).update(`${eventId}.${timestamp}.${payload}`).digest("base64");
+    const webhookHeaders = { "content-type": "application/json", "svix-id": eventId, "svix-timestamp": timestamp, "svix-signature": `v1,${signature}` };
+    const invalidWebhook = await fetch(`${base}/api/webhooks/resend`, { method: "POST", headers: webhookHeaders, body: `${payload} ` });
+    assert.equal(invalidWebhook.status, 401);
+    jobKeys.push(`resend:${suffix}`);
+    for (let repeat = 0; repeat < 2; repeat++) {
+      const webhook = await fetch(`${base}/api/webhooks/resend`, { method: "POST", headers: webhookHeaders, body: payload }); assert.equal(webhook.status, 200);
+    }
+    assert.equal(await db.ingestionJob.count({ where: { key: `resend:${suffix}` } }), 1);
+    console.log("PASS signed Resend HTTP webhook, invalid-signature rejection and replay deduplication");
+    const response = await fetch(`${base}/api/export/tax-pack?orgSlug=${org.slug}&month=${date.slice(0, 7)}`, { headers });
+    assert.equal(response.status, 200, "Tax pack HTTP status");
+    const zip = await JSZip.loadAsync(await response.arrayBuffer());
+    const csv = await zip.file(`Reconciliation_Report_${date.slice(0, 7)}.csv`)!.async("string");
+    const report = Papa.parse<Record<string, string>>(csv, { header: true });
+    assert.equal(report.data.length, 3);
+    const archived = await zip.file(report.data[0]["File Reference"])!.async("nodebuffer");
+    assert.ok(archived.equals(pdf));
+    const forbidden = await fetch(`${base}/api/export/tax-pack?orgSlug=${otherOrg.slug}&month=${date.slice(0, 7)}`, { headers });
+    assert.equal(forbidden.status, 403);
+    console.log("PASS authenticated ZIP export, CSV file references, original receipt bytes and tenant isolation");
+  } finally {
+    server.kill();
+    if (storagePaths.length) await admin.storage.from("receipts-vault").remove(storagePaths);
+    await db.ingestionJob.deleteMany({ where: { key: { in: jobKeys } } });
+    await db.reconciliationRecord.deleteMany({ where: { orgId: { in: orgIds } } });
+    await db.organization.deleteMany({ where: { id: { in: orgIds } } });
+    if (userId) { await db.user.deleteMany({ where: { id: userId } }); await admin.auth.admin.deleteUser(userId); }
+    await db.$disconnect();
+    console.log("Temporary workflow fixtures removed");
+  }
+}
+main().catch(error => { console.error(error instanceof Error ? error.message : "Workflow test failed"); process.exitCode = 1; });

@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { refreshSession } from "@/lib/supabase/middleware";
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
   const isApi = pathname.startsWith("/api/");
   let refreshed: NextResponse | undefined;
@@ -48,6 +48,5 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  runtime: "nodejs",
   matcher: ["/dashboard/:path*", "/api/export/:path*", "/api/ai/:path*", "/onboarding"],
 };

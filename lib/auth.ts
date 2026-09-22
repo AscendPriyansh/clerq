@@ -1,12 +1,9 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { createClient } from "@/lib/supabase/server";
+import { AppError } from "@/lib/errors";
 
-export class AccessError extends Error {
-  constructor(message: string, public readonly code: string, public readonly status: number) {
-    super(message);
-  }
-}
+export class AccessError extends AppError {}
 
 // Every action/route must check its own tenant scope, even after middleware runs.
 export async function requireUser() {
