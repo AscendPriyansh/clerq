@@ -51,6 +51,31 @@ async function main() {
     }
     assert.ok(matched, "Vercel Queues must extract and automatically reconcile without a local worker");
     console.log("PASS Vercel queue extraction and automatic reconciliation");
+    const { CanvasFactory, getPath } = await import("pdf-parse/worker");
+    const { PDFParse } = await import("pdf-parse");
+    PDFParse.setWorker(getPath());
+    const renderer = new PDFParse({ data: new Uint8Array(invoicePdf("Zoom", "19.95", date)), CanvasFactory });
+    let png: Uint8Array;
+    try { png = (await renderer.getScreenshot({ first: 1, scale: 2 })).pages[0].data; }
+    finally { await renderer.destroy(); }
+    await prisma.bankTransaction.create({ data: { orgId, transactionDate: new Date(date), rawDescription: "Zoom", counterpartyName: "Zoom", amount: "19.95", currency: "USD", type: "DEBIT" } });
+    const imagePrepared = await request("/api/receipts/upload", { method: "POST", headers, body: JSON.stringify({ orgSlug: org.slug, mimeType: "image/png", size: png.length }) });
+    assert.equal(imagePrepared.status, 200);
+    const imageTarget = await imagePrepared.json(); paths.push(imageTarget.path);
+    assert.ok((await fetch(imageTarget.signedUrl, { method: "PUT", headers: { "content-type": "image/png" }, body: new Uint8Array(png), signal: AbortSignal.timeout(60000) })).ok);
+    const imageComplete = await request("/api/receipts/upload/complete", { method: "POST", headers, body: JSON.stringify({ orgSlug: org.slug, path: imageTarget.path, mimeType: "image/png" }) });
+    assert.equal(imageComplete.status, 202);
+    const imageReceiptId = (await imageComplete.json()).receiptId;
+    const imageDeadline = Date.now() + 300000;
+    let imageMatched = false;
+    while (Date.now() < imageDeadline) {
+      const receipt = await prisma.receipt.findUniqueOrThrow({ where: { id: imageReceiptId } });
+      if (receipt.status === "MATCHED") { imageMatched = true; break; }
+      if (receipt.status === "FLAGGED") throw new Error("Synthetic image was flagged during cloud OCR.");
+      await new Promise(resolve => setTimeout(resolve, 3000));
+    }
+    assert.ok(imageMatched, "Vercel must OCR and reconcile the image receipt");
+    console.log("PASS deployed image OCR, extraction and automatic matching");
     const original = await request(`/api/receipts/${receiptId}?orgSlug=${org.slug}`, { headers });
     assert.equal(original.status, 200);
     assert.ok(Buffer.from(await original.arrayBuffer()).equals(pdf));
@@ -60,6 +85,9 @@ async function main() {
     const file = Object.values(zip.files).find(entry => entry.name.endsWith(".pdf"));
     assert.ok(file);
     assert.ok((await file.async("nodebuffer")).equals(pdf));
+    const imageFile = Object.values(zip.files).find(entry => entry.name.endsWith(".png"));
+    assert.ok(imageFile);
+    assert.ok((await imageFile.async("nodebuffer")).equals(Buffer.from(png)));
     console.log("PASS deployed original-file streaming and tax-pack export");
   } finally {
     if (orgId) {

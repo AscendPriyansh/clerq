@@ -24,8 +24,11 @@ export async function parseReceiptWithGroq(fileBuffer: Buffer, mimeType: string)
   let image: Buffer | undefined;
   let imageMime = mimeType;
   if (mimeType === "application/pdf") {
+    // Initialise Node canvas globals before PDF.js is evaluated in serverless runtimes.
+    const { CanvasFactory, getPath } = await import("pdf-parse/worker");
     const { PDFParse } = await import("pdf-parse");
-    const parser = new PDFParse({ data: new Uint8Array(fileBuffer) });
+    PDFParse.setWorker(getPath());
+    const parser = new PDFParse({ data: new Uint8Array(fileBuffer), CanvasFactory });
     try {
       const result = await parser.getText({ first: 5 });
       text = result.text.trim();
