@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { loadEnvConfig } from "@next/env";
-import { invoicePdf } from "./fixtures";
+import { invoicePdf, imageOnlyPdf } from "./fixtures";
 loadEnvConfig(process.cwd());
 async function main() {
   const { parseReceiptWithGroq } = await import("../lib/ai/receipt-parser");
@@ -21,6 +21,20 @@ async function main() {
     assert.equal(extracted.totalAmount, 100);
     assert.equal(extracted.transactionDate, "2026-09-15");
     console.log("PASS PDF rasterisation, image OCR and Groq extraction.");
+    const { createCanvas, loadImage } = await import("@napi-rs/canvas");
+    const decoded = await loadImage(image);
+    const canvas = createCanvas(decoded.width, decoded.height);
+    canvas.getContext("2d").drawImage(decoded, 0, 0);
+    const scanned = imageOnlyPdf(canvas.toBuffer("image/jpeg"), decoded.width, decoded.height);
+    const scanParser = new PDFParse({ data: new Uint8Array(scanned) });
+    try { assert.ok((await scanParser.getText()).text.trim().length < 100, "Fixture must require OCR"); }
+    finally { await scanParser.destroy(); }
+    const scanResult = await parseReceiptWithGroq(scanned, "application/pdf");
+    assert.match(scanResult.vendorName.toLowerCase(), /stripe/);
+    assert.equal(scanResult.totalAmount, 100);
+    assert.equal(scanResult.transactionDate, "2026-09-15");
+    assert.equal(scanResult.currency, "USD");
+    console.log("PASS image-only scanned PDF OCR and structured extraction.");
   }
 }
 main().catch(error => { console.error(error instanceof Error ? error.message : "Extraction check failed"); process.exitCode = 1; });

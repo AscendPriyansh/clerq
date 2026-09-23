@@ -51,6 +51,17 @@ async function main() {
     }
     assert.ok(matched, "Vercel Queues must extract and automatically reconcile without a local worker");
     console.log("PASS Vercel queue extraction and automatic reconciliation");
+    // Verify PDF downloads/export before OCR, so an OCR failure cannot hide them.
+    const pdfOriginal = await request(`/api/receipts/${receiptId}?orgSlug=${org.slug}`, { headers });
+    assert.equal(pdfOriginal.status, 200);
+    assert.ok(Buffer.from(await pdfOriginal.arrayBuffer()).equals(pdf));
+    const pdfExport = await request(`/api/export/tax-pack?orgSlug=${org.slug}&month=${date.slice(0, 7)}`, { headers });
+    assert.equal(pdfExport.status, 200);
+    const pdfZip = await JSZip.loadAsync(await pdfExport.arrayBuffer());
+    const pdfEntry = Object.values(pdfZip.files).find(entry => entry.name.endsWith(".pdf"));
+    assert.ok(pdfEntry);
+    assert.ok((await pdfEntry.async("nodebuffer")).equals(pdf));
+    console.log("PASS deployed PDF original-file streaming and tax-pack export before image OCR");
     const { CanvasFactory, getPath } = await import("pdf-parse/worker");
     const { PDFParse } = await import("pdf-parse");
     PDFParse.setWorker(getPath());
