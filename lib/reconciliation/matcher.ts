@@ -10,9 +10,9 @@ export async function lockOrganisation(tx: Prisma.TransactionClient, orgId: stri
 }
 async function loadCandidates(tx: Prisma.TransactionClient, orgId: string) {
   const [transactions, receipts, dismissals] = await Promise.all([
-    tx.bankTransaction.findMany({ where: { orgId, type: "DEBIT", isReconciled: false }, orderBy: { id: "asc" } }),
-    tx.receipt.findMany({ where: { orgId, status: { in: ["UNMATCHED", "PARSED", "FLAGGED"] }, confidenceScore: { gte: 0.7 }, totalAmount: { not: null }, transactionDate: { not: null } }, orderBy: { id: "asc" } }),
-    tx.dismissedMatch.findMany({ where: { orgId } }),
+    tx.bankTransaction.findMany({ where: { orgId, type: "DEBIT", isReconciled: false }, orderBy: { id: "asc" }, select: { id: true, counterpartyName: true, transactionDate: true, amount: true, currency: true } }),
+    tx.receipt.findMany({ where: { orgId, status: { in: ["UNMATCHED", "PARSED", "FLAGGED"] }, confidenceScore: { gte: 0.7 }, totalAmount: { not: null }, transactionDate: { not: null } }, orderBy: { id: "asc" }, select: { id: true, vendorName: true, transactionDate: true, totalAmount: true, currency: true, confidenceScore: true } }),
+    tx.dismissedMatch.findMany({ where: { orgId }, select: { receiptId: true, bankTransactionId: true } }),
   ]);
   const plan = planMatches(receipts, transactions, new Set(dismissals.map(row => `${row.receiptId}:${row.bankTransactionId}`)));
   return { transactions, receipts, plan };
@@ -35,9 +35,11 @@ export async function runReconciliation(orgId: string) {
 }
 
 export async function getSuggestions(orgId: string) {
-  const { plan } = await loadCandidates(prisma, orgId);
+  const { plan, transactions, receipts } = await loadCandidates(prisma, orgId);
+  const bankNames = new Map(transactions.map(row => [row.id, row.counterpartyName]));
+  const receiptNames = new Map(receipts.map(row => [row.id, row.vendorName]));
   // Read-only: exact candidates awaiting the worker can also be reviewed.
-  return [...plan.exact, ...plan.suggestions];
+  return [...plan.exact, ...plan.suggestions].map(pair => ({ ...pair, bankName: bankNames.get(pair.bankTransactionId) ?? "Bank transaction", receiptName: receiptNames.get(pair.receiptId) ?? "Receipt" }));
 }
 
 export async function commitMatch(input: { orgId: string; receiptId: string; bankTransactionId: string; userId: string; manual: boolean; notes?: string }) {

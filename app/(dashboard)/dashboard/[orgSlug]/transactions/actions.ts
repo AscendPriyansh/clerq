@@ -6,7 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { parseStatement } from "@/lib/parser/statement";
 import { type ColumnMap } from "@/lib/parser/csv-mapper";
 import { AppError } from "@/lib/errors";
-import { dispatchPendingJobs } from "@/lib/jobs/dispatch";
+import { dispatchJob } from "@/lib/jobs/dispatch";
 
 export async function importBankStatementCSV(form: FormData, orgSlug: string) {
   try {
@@ -18,15 +18,15 @@ export async function importBankStatementCSV(form: FormData, orgSlug: string) {
     try { parsed = parseStatement(await file.text(), mapping, { dateOrder: form.get("dateOrder") === "MDY" ? "MDY" : "DMY", currency: String(form.get("currency") || organization.baseCurrency).toUpperCase(), negativeIsCredit: form.get("negativeIsCredit") !== "false" }); }
     catch (error) { throw new AppError(error instanceof Error ? error.message : "Invalid CSV.", "INVALID_CSV"); }
     let imported = 0;
-    await prisma.$transaction(async tx => {
+    const job = await prisma.$transaction(async tx => {
       for (let offset = 0; offset < parsed.rows.length; offset += 500) {
         const result = await tx.bankTransaction.createMany({ data: parsed.rows.slice(offset, offset + 500).map(row => ({ ...row, orgId: organization.id })), skipDuplicates: true });
         imported += result.count;
       }
-      if (imported) await tx.ingestionJob.create({ data: { type: "RECONCILE", key: `csv:${randomUUID()}`, payload: { orgId: organization.id } } });
+      if (imported) return tx.ingestionJob.create({ data: { type: "RECONCILE", key: `csv:${randomUUID()}`, payload: { orgId: organization.id } } });
     }, { timeout: 60000 });
-    await dispatchPendingJobs(organization.id);
-    revalidatePath(`/dashboard/${orgSlug}`);
+    if (job) await dispatchJob(job.id);
+    revalidatePath(`/dashboard/${orgSlug}`, "layout");
     return { imported, skipped: parsed.rows.length - imported, invalid: parsed.errors.length, errors: parsed.errors.slice(0, 20) };
   } catch (error) { return { error: error instanceof AppError ? error.message : "CSV import failed. Please try again." }; }
 }

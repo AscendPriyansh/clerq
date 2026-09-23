@@ -52,7 +52,9 @@ export function planMatches(receipts: MatchReceipt[], transactions: MatchTransac
   const buckets = new Map<string, MatchTransaction[]>();
   for (const transaction of transactions) {
     const key = `${transaction.currency}:${new Prisma.Decimal(transaction.amount).mul(100).floor().toFixed(0)}`;
-    buckets.set(key, [...(buckets.get(key) ?? []), transaction]);
+    const bucket = buckets.get(key);
+    if (bucket) bucket.push(transaction);
+    else buckets.set(key, [transaction]);
   }
   const candidates: NonNullable<ReturnType<typeof comparePair>>[] = [];
   for (const receipt of receipts) {

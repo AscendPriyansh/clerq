@@ -26,19 +26,23 @@ export async function proxy(request: NextRequest) {
     refreshed = response;
     if (!user) return deny("Authentication required", "UNAUTHENTICATED", 401, "/login");
     if (pathname === "/onboarding") return finish(response);
+    const slug = pathname.match(/^\/dashboard\/([^/]+)/)?.[1];
+    // The usual workspace request needs one scoped query. Fetch a fallback
+    // organisation only on denied access, not before every successful request.
+    if (slug) {
+      const allowed = await prisma.membership.findFirst({
+        where: { userId: user.id, organization: { slug } }, select: { id: true },
+      });
+      if (allowed) return finish(response);
+    }
     const membership = await prisma.membership.findFirst({
       where: { userId: user.id },
       select: { organization: { select: { slug: true } } },
       orderBy: { id: "asc" },
     });
     if (!membership) return deny("Create an organisation first", "ORGANIZATION_REQUIRED", 403, "/onboarding");
-    const slug = pathname.match(/^\/dashboard\/([^/]+)/)?.[1];
     if (slug) {
-      const allowed = await prisma.membership.findFirst({
-        where: { userId: user.id, organization: { slug } },
-        select: { id: true },
-      });
-      if (!allowed) return deny("Organisation access denied", "FORBIDDEN", 403, `/dashboard/${membership.organization.slug}`);
+      return deny("Organisation access denied", "FORBIDDEN", 403, `/dashboard/${membership.organization.slug}`);
     }
     return finish(response);
   } catch (error) {

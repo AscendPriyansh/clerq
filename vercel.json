@@ -1,5 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "regions": ["bom1"],
   "buildCommand": "npm run db:generate && npm run build",
   "functions": {
     "app/api/queues/jobs/route.ts": {

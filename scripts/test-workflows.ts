@@ -78,6 +78,17 @@ async function main() {
     const auth = createServerClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, { cookies: { getAll: () => [...jar].map(([name, value]) => ({ name, value })), setAll: cookies => cookies.forEach(({ name, value }) => jar.set(name, value)) } });
     const login = await auth.auth.signInWithPassword({ email, password }); assert.equal(login.error, null);
     const headers = { Cookie: [...jar].map(([name, value]) => `${name}=${value}`).join("; ") };
+    for (const path of ["", "/receipts", "/transactions", "/reconcile?bankPage=2&receiptStatus=FLAGGED", "/settings"]) {
+      const start = performance.now();
+      const page = await fetch(`${base}/dashboard/${org.slug}${path}`, { headers });
+      const html = await page.text();
+      assert.equal(page.status, 200);
+      assert.ok(!html.includes('id="__next_error__"'), "Dashboard must render without server errors");
+      console.log(`PASS authenticated page ${path || "/overview"}: ${Math.round(performance.now() - start)} ms (local server with remote services)`);
+    }
+    const deniedPage = await fetch(`${base}/dashboard/${otherOrg.slug}`, { headers, redirect: "manual" });
+    assert.equal(deniedPage.status, 307);
+    assert.ok(deniedPage.headers.get("location")?.endsWith(`/dashboard/${org.slug}`));
     const form = new FormData(); form.set("orgSlug", org.slug); form.set("file", new File([new Uint8Array(invoicePdf("Zoom", "20", date))], "receipt.pdf", { type: "application/pdf" }));
     const upload = await fetch(`${base}/api/ai/parse-receipt`, { method: "POST", headers: { ...headers, Origin: base }, body: form });
     assert.equal(upload.status, 202);

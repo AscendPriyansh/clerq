@@ -3,13 +3,13 @@ import { z } from "zod";
 import { requireMembership } from "@/lib/auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { BUCKET, downloadReceipt, storeReceipt } from "@/lib/receipts/service";
-import { readLimitedBody } from "@/lib/files";
+import { readRequestJson } from "@/lib/request-json";
 import { AppError, errorResponse } from "@/lib/errors";
 
 export const maxDuration = 60;
 export async function POST(request: Request) {
   try {
-    const input = z.object({ orgSlug: z.string(), path: z.string().max(250), mimeType: z.enum(["application/pdf", "image/png", "image/jpeg", "image/webp"]) }).parse(JSON.parse((await readLimitedBody(request, 4096)).toString()));
+    const input = z.object({ orgSlug: z.string().min(1), path: z.string().max(250), mimeType: z.enum(["application/pdf", "image/png", "image/jpeg", "image/webp"]) }).parse(await readRequestJson(request));
     const { organization, user } = await requireMembership(input.orgSlug);
     const prefix = `${organization.id}/staging/${user.id}/`;
     if (!input.path.startsWith(prefix) || !/^[0-9a-f-]{36}\.(pdf|png|jpg|webp)$/.test(input.path.slice(prefix.length))) throw new AppError("Upload access denied.", "FORBIDDEN", 403);

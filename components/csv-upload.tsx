@@ -1,14 +1,12 @@
 "use client";
 import { useState, useTransition } from "react";
 import { useDropzone } from "react-dropzone";
-import { useRouter } from "next/navigation";
 import Papa from "papaparse";
 import { detectColumns, type ColumnMap } from "@/lib/parser/csv-mapper";
 import { importBankStatementCSV } from "@/app/(dashboard)/dashboard/[orgSlug]/transactions/actions";
 import { Button } from "@/components/ui/button";
 
 export function CsvUpload({ orgSlug, currency }: { orgSlug: string; currency: string }) {
-  const router = useRouter();
   const [file, setFile] = useState<File>();
   const [headers, setHeaders] = useState<string[]>([]);
   const [mapping, setMapping] = useState<ColumnMap>({ dateCol: null, descriptionCol: null, amountCol: null, creditCol: null });
@@ -29,7 +27,6 @@ export function CsvUpload({ orgSlug, currency }: { orgSlug: string; currency: st
       startTransition(async () => {
         const result = await importBankStatementCSV(form, orgSlug);
         setMessage("error" in result ? result.error ?? "Import failed." : `Imported ${result.imported} transactions, skipped ${result.skipped} duplicates, ${result.invalid} invalid rows. ${result.errors.map(row => `Row ${row.row}: ${row.error}`).join(" ")}`);
-        router.refresh();
       });
     }}>
       {(Object.keys(mapping) as (keyof ColumnMap)[]).map(key => <label key={key}>{({ dateCol: "Date", descriptionCol: "Description", amountCol: "Amount / debit", creditCol: "Credit (optional)" })[key]}<select className="mt-1 block w-full rounded border p-2" value={mapping[key] ?? ""} onChange={event => setMapping({ ...mapping, [key]: event.target.value || null })} required={key !== "creditCol"}><option value="">Choose column</option>{headers.map(header => <option key={header}>{header}</option>)}</select></label>)}
