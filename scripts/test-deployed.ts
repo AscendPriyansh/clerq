@@ -4,7 +4,7 @@ import { loadEnvConfig } from "@next/env";
 import { createClient } from "@supabase/supabase-js";
 import { createServerClient } from "@supabase/ssr";
 import JSZip from "jszip";
-import { invoicePdf } from "./fixtures";
+import { invoicePdf, imageOnlyPdf } from "./fixtures";
 loadEnvConfig(process.cwd());
 
 async function main() {
@@ -28,7 +28,18 @@ async function main() {
     const auth = createServerClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, { cookies: { getAll: () => [...jar].map(([name, value]) => ({ name, value })), setAll: cookies => cookies.forEach(({ name, value }) => jar.set(name, value)) } });
     assert.equal((await auth.auth.signInWithPassword({ email, password })).error, null);
     const headers = { Cookie: [...jar].map(([name, value]) => `${name}=${value}`).join("; "), "content-type": "application/json" };
-    assert.equal((await request(`/dashboard/${org.slug}`, { headers })).status, 200);
+    for (const pagePath of ["", "/receipts", "/transactions", "/reconcile", "/settings"]) {
+      const timings: number[] = [];
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const start = performance.now();
+        const response = await request(`/dashboard/${org.slug}${pagePath}`, { headers });
+        const html = await response.text();
+        assert.equal(response.status, 200);
+        assert.ok(!html.includes('id="__next_error__"'), "Page must render without server errors");
+        timings.push(Math.round(performance.now() - start));
+      }
+      console.log(`PASS deployed page ${pagePath || "/overview"}: ${timings.join(" / ")} ms (two full HTTP responses, not browser timings)`);
+    }
     console.log("PASS deployed authenticated dashboard and database access");
     const date = new Date().toISOString().slice(0, 10);
     const pdf = Buffer.concat([invoicePdf("Stripe", "29.95", date), Buffer.alloc(5 * 1024 * 1024, 32)]);
@@ -100,6 +111,38 @@ async function main() {
     assert.ok(imageFile);
     assert.ok((await imageFile.async("nodebuffer")).equals(Buffer.from(png)));
     console.log("PASS deployed original-file streaming and tax-pack export");
+    const { createCanvas, loadImage } = await import("@napi-rs/canvas");
+    const decoded = await loadImage(Buffer.from(png));
+    const canvas = createCanvas(decoded.width, decoded.height);
+    canvas.getContext("2d").drawImage(decoded, 0, 0);
+    const scannedPdf = imageOnlyPdf(canvas.toBuffer("image/jpeg"), decoded.width, decoded.height);
+    await prisma.bankTransaction.create({ data: { orgId, transactionDate: new Date(date), rawDescription: "Zoom", counterpartyName: "Zoom", amount: "19.95", currency: "USD", type: "DEBIT" } });
+    const scanPrepared = await request("/api/receipts/upload", { method: "POST", headers, body: JSON.stringify({ orgSlug: org.slug, mimeType: "application/pdf", size: scannedPdf.length }) });
+    assert.equal(scanPrepared.status, 200);
+    const scanTarget = await scanPrepared.json(); paths.push(scanTarget.path);
+    assert.ok((await fetch(scanTarget.signedUrl, { method: "PUT", headers: { "content-type": "application/pdf" }, body: new Uint8Array(scannedPdf), signal: AbortSignal.timeout(60000) })).ok);
+    const scanComplete = await request("/api/receipts/upload/complete", { method: "POST", headers, body: JSON.stringify({ orgSlug: org.slug, path: scanTarget.path, mimeType: "application/pdf" }) });
+    assert.equal(scanComplete.status, 202);
+    const scanId = (await scanComplete.json()).receiptId;
+    const scanDeadline = Date.now() + 300000;
+    let scanMatched = false;
+    while (Date.now() < scanDeadline) {
+      const receipt = await prisma.receipt.findUniqueOrThrow({ where: { id: scanId } });
+      if (receipt.status === "MATCHED") { scanMatched = true; break; }
+      if (receipt.status === "FLAGGED") throw new Error("Synthetic scanned PDF was flagged during cloud OCR.");
+      await new Promise(resolve => setTimeout(resolve, 3000));
+    }
+    assert.ok(scanMatched, "Vercel must OCR and reconcile an image-only PDF");
+    const scanOriginal = await request(`/api/receipts/${scanId}?orgSlug=${org.slug}`, { headers });
+    assert.equal(scanOriginal.status, 200);
+    assert.ok(Buffer.from(await scanOriginal.arrayBuffer()).equals(scannedPdf));
+    console.log("PASS deployed image-only scanned PDF extraction, automatic matching and original download");
+  } catch (error) {
+    if (orgId) {
+      const jobs = await prisma.ingestionJob.findMany({ where: { payload: { path: ["orgId"], equals: orgId } }, select: { type: true, status: true, attempts: true, lastError: true } });
+      console.error("Disposable test job diagnostics", jobs);
+    }
+    throw error;
   } finally {
     if (orgId) {
       const receipts = await prisma.receipt.findMany({ where: { orgId }, select: { rawFileUrl: true } });
