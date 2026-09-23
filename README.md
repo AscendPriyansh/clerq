@@ -1,5 +1,7 @@
 # Clerq
 
+For requirements, implementation details, the latest deployed test results and next-agent instructions, read [AI_AGENT_README.md](AI_AGENT_README.md). Production text-PDF processing is verified; production image OCR remains unresolved. Older status entries are historical.
+
 Receipt ingestion and bank reconciliation for agencies and bookkeepers. Built with Next.js App Router, TypeScript, Prisma **6**, Supabase Auth/Storage/PostgreSQL, Groq, Resend and the requested UI/export libraries.
 
 ## Run locally
