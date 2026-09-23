@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { ExtractedReceiptSchema } from "@/lib/ai/extraction-schema";
 import { lockOrganisation } from "@/lib/reconciliation/matcher";
 import { randomUUID } from "node:crypto";
+import { dispatchPendingJobs } from "@/lib/jobs/dispatch";
 
 export async function saveReceiptReview(orgSlug: string, receiptId: string, form: FormData) {
   try {
@@ -17,6 +18,7 @@ export async function saveReceiptReview(orgSlug: string, receiptId: string, form
       if (!updated.count) throw new Error("Receipt unavailable or already matched.");
       await tx.ingestionJob.create({ data: { key: `review:${randomUUID()}`, type: "RECONCILE", payload: { orgId: organization.id } } });
     });
+    await dispatchPendingJobs(organization.id);
     revalidatePath(`/dashboard/${orgSlug}`, "layout");
     return { success: true };
   } catch { return { error: "Unable to save receipt. Matched receipts cannot be edited." }; }
@@ -34,6 +36,7 @@ export async function retryReceipt(orgSlug: string, receiptId: string) {
       await tx.receipt.update({ where: { id: receiptId }, data: { status: "PROCESSING", notes: null } });
       await tx.ingestionJob.upsert({ where: { key: `parse:${receiptId}` }, create: { key: `parse:${receiptId}`, type: "RECEIPT_PARSE", payload: { receiptId, orgId: organization.id } }, update: { status: "PENDING", attempts: 0, lockedAt: null, availableAt: new Date(), lastError: null } });
     });
+    await dispatchPendingJobs(organization.id);
     revalidatePath(`/dashboard/${orgSlug}`, "layout");
     return { success: true };
   } catch { return { error: "Unable to retry extraction. It may already be running." }; }

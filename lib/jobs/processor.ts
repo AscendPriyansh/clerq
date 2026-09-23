@@ -7,6 +7,7 @@ import { emailAddress, ReceivedEmailSchema } from "@/lib/email/resend";
 import { MIME_EXTENSIONS, MAX_FILE_BYTES, readLimitedBody } from "@/lib/files";
 import { downloadReceipt, storeReceipt } from "@/lib/receipts/service";
 import { parseReceiptWithGroq } from "@/lib/ai/receipt-parser";
+import { dispatchJob } from "./dispatch";
 
 async function ingestEmail(payload: Prisma.JsonValue) {
   const event = ReceivedEmailSchema.parse({ type: "email.received", data: payload }).data;
@@ -35,7 +36,12 @@ async function ingestEmail(payload: Prisma.JsonValue) {
 async function parseReceipt(payload: Prisma.JsonValue) {
   const { receiptId, orgId } = z.object({ receiptId: z.string().uuid(), orgId: z.string().uuid() }).parse(payload);
   const receipt = await prisma.receipt.findFirst({ where: { id: receiptId, orgId } });
-  if (!receipt || receipt.status !== "PROCESSING") return;
+  if (!receipt) return;
+  if (receipt.status !== "PROCESSING") {
+    const followup = await prisma.ingestionJob.findUnique({ where: { key: `reconcile:${receiptId}` } });
+    if (followup?.status === "PENDING") await dispatchJob(followup.id);
+    return;
+  }
   const buffer = await downloadReceipt(receipt.rawFileUrl, orgId);
   const extracted = await parseReceiptWithGroq(buffer, receipt.mimeType);
   await prisma.$transaction(async tx => {
@@ -45,6 +51,8 @@ async function parseReceipt(payload: Prisma.JsonValue) {
     } });
     if (updated.count) await tx.ingestionJob.upsert({ where: { key: `reconcile:${receiptId}` }, update: { status: "PENDING", availableAt: new Date() }, create: { key: `reconcile:${receiptId}`, type: "RECONCILE", payload: { orgId } } });
   });
+  const followup = await prisma.ingestionJob.findUnique({ where: { key: `reconcile:${receiptId}` } });
+  if (followup?.status === "PENDING") await dispatchJob(followup.id);
 }
 
 export async function processNextJob(jobId?: string) {
@@ -56,6 +64,7 @@ export async function processNextJob(jobId?: string) {
   const claimed = await prisma.ingestionJob.updateMany({ where: { id: candidate.id, ...eligible }, data: { status: "RUNNING", lockedAt: now, attempts: { increment: 1 } } });
   if (!claimed.count) return true;
   try {
+    if (candidate.attempts >= 5) throw new Error("JOB_ATTEMPTS_EXHAUSTED");
     if (candidate.type === "EMAIL_INGEST") await ingestEmail(candidate.payload);
     else if (candidate.type === "RECEIPT_PARSE") await parseReceipt(candidate.payload);
     else {

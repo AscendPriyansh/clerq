@@ -41,7 +41,8 @@ export async function parseReceiptWithGroq(fileBuffer: Buffer, mimeType: string)
   const visionModel = process.env.GROQ_VISION_MODEL?.trim();
   if (image && !visionModel) text = await recognise(image);
   if (!text.trim() && !(image && visionModel)) throw new Error("No readable text; manual review required");
-  const groq = new Groq({ apiKey: process.env.GROQ_API_KEY, timeout: 60000, maxRetries: 2 });
+  // The durable job owns retries; keep a single invocation within Hobby's duration.
+  const groq = new Groq({ apiKey: process.env.GROQ_API_KEY, timeout: 60000, maxRetries: 0 });
   let raw = "";
   try {
     const content: Groq.Chat.Completions.ChatCompletionContentPart[] = image && visionModel

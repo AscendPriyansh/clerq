@@ -55,7 +55,7 @@ export function AuthForm({ mode, initialError }: { mode: "login" | "register"; i
         <button disabled={busy} value="password" className="w-full rounded bg-black p-2 text-white disabled:opacity-50">{busy ? "Please wait…" : mode === "register" ? "Create account" : "Sign in"}</button>
         {mode === "login" && <>
           <button disabled={busy} value="magic" className="w-full rounded border p-2">Email me a sign-in link</button>
-          <button disabled={busy} value="google" formNoValidate className="w-full rounded border p-2">Continue with Google</button>
+          {process.env.NEXT_PUBLIC_GOOGLE_AUTH_ENABLED === "true" && <button disabled={busy} value="google" formNoValidate className="w-full rounded border p-2">Continue with Google</button>}
         </>}
       </form>
       {message && <p role="status" className="rounded border p-3 text-sm">{message}</p>}

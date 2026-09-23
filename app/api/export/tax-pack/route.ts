@@ -5,8 +5,10 @@ import { prisma } from "@/lib/prisma";
 import { AppError, errorResponse } from "@/lib/errors";
 import { downloadReceipt } from "@/lib/receipts/service";
 import { MIME_EXTENSIONS } from "@/lib/files";
+import { Readable } from "node:stream";
 
 export const runtime = "nodejs";
+export const maxDuration = 300;
 export async function GET(request: Request) {
   try {
     const search = new URL(request.url).searchParams;
@@ -31,7 +33,7 @@ export async function GET(request: Request) {
     }
     const csv = Papa.unparse({ fields: ["Transaction Date", "Bank Payee", "Receipt Vendor", "Category", "Total Amount", "Tax Amount", "Currency", "File Reference", "Match Type"], data: rows }, { escapeFormulae: true });
     zip.file(`Reconciliation_Report_${month}.csv`, csv);
-    const buffer = await zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
-    return new Response(new Uint8Array(buffer), { headers: { "Content-Type": "application/zip", "Content-Disposition": `attachment; filename="clerq-taxpack-${month}.zip"`, "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" } });
+    const stream = Readable.toWeb(zip.generateNodeStream({ type: "nodebuffer", compression: "DEFLATE", streamFiles: true }) as Readable) as ReadableStream<Uint8Array>;
+    return new Response(stream, { headers: { "Content-Type": "application/zip", "Content-Disposition": `attachment; filename="clerq-taxpack-${month}.zip"`, "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" } });
   } catch (error) { return errorResponse(error); }
 }

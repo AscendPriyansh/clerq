@@ -46,13 +46,19 @@ Resend replaces Postmark at the user's request. `/api/webhooks/resend` verifies 
 - Live authenticated ZIP export verified exact, fuzzy-confirmed and manual-override records, correct CSV file references and unchanged original PDF bytes. Another tenant's export was denied.
 - All temporary integration users, organisations, files and jobs were cleaned up.
 
-## Remaining external setup
+## Vercel deployment update — 23 September 2026
 
-- Replace the rejected Resend API key; supply the webhook signing secret and receiving domain, restart the app/worker, then activate forwarding in Settings.
-- Enable Google OAuth in Supabase if desired. Magic-link delivery, signup confirmation delivery and Google OAuth have not been tested with a real inbox/account.
-- Deployment has not been performed. Keep a separate worker process running alongside the web app.
+- The user deployed the initial app at https://clerq-zeta.vercel.app on Hobby. Login and unauthenticated access controls passed live checks.
+- The replacement Resend key works. The registered webhook is enabled for `email.received` at the correct route; its signing secret matches `.env.local`. The configured receiving domain has MX records.
+- The current live deployment still returns 503 for the webhook, indicating its signing secret is not available to that deployment. Save `RESEND_WEBHOOK_SECRET` for Production and redeploy.
+- Added Vercel Queues dispatch and a private consumer for saved database jobs. Follow-up reconciliation jobs are dispatched after commit, retries preserve database state, and a daily protected cron recovers interrupted or unpublished jobs. Local/self-hosted development retains the separate worker.
+- Added direct signed uploads into private Supabase Storage, followed by authenticated tenant/user-scoped finalisation and file-byte validation. Original receipt and ZIP downloads stream their response. CSV uploads are limited to 4 MB to fit Vercel request limits.
+- Google sign-in remains deferred and its button is hidden unless explicitly enabled.
+- Production build, lint and 40 unit tests passed. Expanded live integration checks passed: >5 MB signed upload, cross-tenant denial, exact original-file streaming, durable extraction, concurrent matching, fuzzy/manual confirmation, signed webhook deduplication and streamed ZIP export. Disposable fixtures were removed.
+- A random `CRON_SECRET` was generated in the ignored `.env.local`; copy it to Vercel Production for daily recovery. No secret is committed.
+- Actual Vercel queue execution, new large-file routes and Resend signatures must be checked after publishing these changes. Real forwarded email delivery and inbox-based sign-in links still require end-to-end verification.
 
-## Live service checks — 22 September 2026
+## Earlier service checks — 22 September 2026 (superseded above where noted)
 
 - Supabase database connection: passed; schema created successfully.
 - Supabase Auth settings: HTTP 200; email provider enabled, Google provider disabled.

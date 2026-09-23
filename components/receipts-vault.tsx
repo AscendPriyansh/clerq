@@ -19,15 +19,22 @@ export function ReceiptsVault({ orgSlug, receipts }: { orgSlug: string; receipts
       for (const file of files) {
         setProgress(0); setMessage(`Uploading ${file.name}…`);
         try {
+          const prepare = await fetch("/api/receipts/upload", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ orgSlug, mimeType: file.type, size: file.size }) });
+          const upload = await prepare.json();
+          if (!prepare.ok) throw new Error(upload.error || "Unable to prepare upload.");
           await new Promise<void>((resolve, reject) => {
             const xhr = new XMLHttpRequest();
-            xhr.open("POST", "/api/ai/parse-receipt"); xhr.timeout = 120000;
+            xhr.open("PUT", upload.signedUrl); xhr.timeout = 120000;
+            xhr.setRequestHeader("Content-Type", file.type);
             xhr.upload.onprogress = event => { if (event.lengthComputable) setProgress(Math.round(event.loaded / event.total * 100)); };
             xhr.onerror = () => reject(new Error("Upload failed. Check your connection."));
             xhr.ontimeout = () => reject(new Error("Upload timed out."));
             xhr.onload = () => { try { const data = JSON.parse(xhr.responseText); if (xhr.status >= 400) reject(new Error(data.error || "Upload failed.")); else resolve(); } catch { reject(new Error("Unexpected upload response.")); } };
-            const form = new FormData(); form.set("file", file); form.set("orgSlug", orgSlug); xhr.send(form);
+            xhr.send(file);
           });
+          const complete = await fetch("/api/receipts/upload/complete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ orgSlug, path: upload.path, mimeType: file.type }) });
+          const result = await complete.json();
+          if (!complete.ok) throw new Error(result.error || "Unable to save receipt.");
           setMessage(`${file.name} saved. Extraction will appear below when ready.`);
         } catch (error) { setMessage(error instanceof Error ? error.message : "Upload failed."); break; }
         finally { setProgress(null); router.refresh(); }

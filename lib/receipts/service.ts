@@ -5,19 +5,25 @@ import { prisma } from "@/lib/prisma";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { MAX_FILE_BYTES, MIME_EXTENSIONS, validateFile } from "@/lib/files";
 import { AppError } from "@/lib/errors";
+import { dispatchJob } from "@/lib/jobs/dispatch";
 
 export const BUCKET = "receipts-vault";
 export async function storeReceipt(input: { buffer: Buffer; mimeType: string; orgId: string; source: ReceiptSource; userId?: string; ingestionKey: string }) {
   validateFile(input.buffer, input.mimeType);
   const existing = await prisma.receipt.findUnique({ where: { orgId_ingestionKey: { orgId: input.orgId, ingestionKey: input.ingestionKey } } });
-  if (existing) return existing;
+  if (existing) {
+    const job = await prisma.ingestionJob.findUnique({ where: { key: `parse:${existing.id}` } });
+    if (job?.status === "PENDING") await dispatchJob(job.id);
+    return existing;
+  }
   const id = randomUUID();
   const path = `${input.orgId}/${id}.${MIME_EXTENSIONS[input.mimeType]}`;
   const storage = createAdminClient().storage.from(BUCKET);
   const upload = await storage.upload(path, input.buffer, { contentType: input.mimeType, upsert: false });
   if (upload.error) throw new AppError("Unable to store receipt. Check the receipts-vault bucket.", "STORAGE_ERROR", 502);
+  let receipt;
   try {
-    return await prisma.$transaction(async tx => {
+    receipt = await prisma.$transaction(async tx => {
       const receipt = await tx.receipt.create({ data: {
         id, orgId: input.orgId, source: input.source, uploadedByUserId: input.userId, rawFileUrl: path,
         mimeType: input.mimeType, fileSizeBytes: input.buffer.length, ingestionKey: input.ingestionKey,
@@ -33,6 +39,10 @@ export async function storeReceipt(input: { buffer: Buffer; mimeType: string; or
     }
     throw error;
   }
+  // Dispatch outside the transaction cleanup: a queue outage must not delete a saved file.
+  const job = await prisma.ingestionJob.findUniqueOrThrow({ where: { key: `parse:${id}` } });
+  await dispatchJob(job.id);
+  return receipt;
 }
 
 export async function downloadReceipt(path: string, orgId: string) {

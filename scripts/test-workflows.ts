@@ -23,15 +23,21 @@ async function main() {
   const base = "http://127.0.0.1:3002";
   const signingBytes = randomBytes(32);
   const signingSecret = `whsec_${signingBytes.toString("base64")}`;
-  const server = spawn(process.execPath, ["node_modules/next/dist/bin/next", "start", "--hostname", "127.0.0.1", "--port", "3002"], { env: { ...process.env, NODE_ENV: "production", RESEND_WEBHOOK_SECRET: signingSecret }, stdio: "ignore", windowsHide: true });
+  const server = spawn(process.execPath, ["node_modules/next/dist/bin/next", "start", "--hostname", "127.0.0.1", "--port", "3002"], { env: { ...process.env, NODE_ENV: "production", RESEND_WEBHOOK_SECRET: signingSecret }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  let startupLog = "";
+  server.stdout.on("data", chunk => { startupLog = (startupLog + chunk.toString()).slice(-2000); });
+  server.stderr.on("data", chunk => { startupLog = (startupLog + chunk.toString()).slice(-2000); });
   try {
     let ready = false;
-    for (let attempt = 0; attempt < 100; attempt++) {
+    const startupDeadline = Date.now() + 120000;
+    while (Date.now() < startupDeadline) {
       if (server.exitCode !== null) throw new Error("Integration server exited before startup.");
-      try { const response = await fetch(`${base}/register`, { signal: AbortSignal.timeout(1000) }); if (response.status === 200) { ready = true; break; } } catch {}
-      await new Promise(resolve => setTimeout(resolve, 300));
+      try { const response = await fetch(`${base}/register`, { signal: AbortSignal.timeout(10000) }); if (response.status === 200) { ready = true; break; } } catch {}
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
+    if (!ready) console.error(startupLog);
     assert.ok(ready, "Production integration server started");
+    console.log("PASS production integration server started");
     const email = `clerq-workflow-${suffix}@example.test`, password = `${randomUUID()}aA9!`;
     const created = await admin.auth.admin.createUser({ email, password, email_confirm: true });
     if (created.error || !created.data.user) throw new Error("TEST_AUTH_CREATE_FAILED");
@@ -81,6 +87,26 @@ async function main() {
     const reupload = await fetch(`${base}/api/ai/parse-receipt`, { method: "POST", headers: { ...headers, Origin: base }, body: form });
     assert.equal((await reupload.json()).receiptId, uploadedReceipt.id);
     console.log("PASS authenticated multipart upload, HTTP 202 queue response and duplicate upload");
+    const largePdf = Buffer.concat([invoicePdf("Large upload fixture", "7", date), Buffer.alloc(5 * 1024 * 1024, 32)]);
+    const prepared = await fetch(`${base}/api/receipts/upload`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ orgSlug: org.slug, mimeType: "application/pdf", size: largePdf.length }) });
+    assert.equal(prepared.status, 200);
+    const uploadTarget = await prepared.json(); storagePaths.push(uploadTarget.path);
+    const directUpload = await fetch(uploadTarget.signedUrl, { method: "PUT", headers: { "content-type": "application/pdf" }, body: new Uint8Array(largePdf) });
+    assert.ok(directUpload.ok, "Direct upload to private storage succeeds");
+    const finaliseBody = { orgSlug: org.slug, path: uploadTarget.path, mimeType: "application/pdf" };
+    const deniedUpload = await fetch(`${base}/api/receipts/upload/complete`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ ...finaliseBody, orgSlug: otherOrg.slug }) });
+    assert.equal(deniedUpload.status, 403);
+    const finalised = await fetch(`${base}/api/receipts/upload/complete`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify(finaliseBody) });
+    assert.equal(finalised.status, 202);
+    const largeReceipt = await db.receipt.findUniqueOrThrow({ where: { id: (await finalised.json()).receiptId } });
+    storagePaths.push(largeReceipt.rawFileUrl); jobKeys.push(`parse:${largeReceipt.id}`);
+    await db.ingestionJob.update({ where: { key: `parse:${largeReceipt.id}` }, data: { status: "COMPLETED" } });
+    const original = await fetch(`${base}/api/receipts/${largeReceipt.id}?orgSlug=${org.slug}`, { headers });
+    assert.equal(original.status, 200);
+    assert.ok(Buffer.from(await original.arrayBuffer()).equals(largePdf));
+    console.log("PASS >5 MB direct private upload, tenant denial, finalisation and streamed original bytes");
+    const cronDenied = await fetch(`${base}/api/cron/jobs`); assert.equal(cronDenied.status, 401);
+    console.log("PASS recovery endpoint rejects unauthenticated access");
     const fuzzyReceipt = await storeReceipt({ buffer: invoicePdf("Stripe Payments", "50.01", date), mimeType: "application/pdf", orgId: org.id, source: "WEB_UPLOAD", userId, ingestionKey: `fuzzy:${suffix}` });
     storagePaths.push(fuzzyReceipt.rawFileUrl); jobKeys.push(`parse:${fuzzyReceipt.id}`, `reconcile:${fuzzyReceipt.id}`);
     const parseJob = await db.ingestionJob.findUniqueOrThrow({ where: { key: `parse:${fuzzyReceipt.id}` } });

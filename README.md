@@ -29,7 +29,7 @@ Register or sign in, create an organisation, upload receipts and import a bank C
 - `SUPABASE_SERVICE_ROLE_KEY` enables private receipt storage on the server. It is never exposed to the browser.
 - `GROQ_API_KEY` enables structured extraction. `GROQ_TEXT_MODEL` defaults to `openai/gpt-oss-120b`, verified in the configured Groq account's model list. Both Llama model IDs in the original prompt are unavailable; images and scanned PDFs use Tesseract OCR followed by Groq text extraction. Set `GROQ_VISION_MODEL` only to a currently supported model if desired. Tesseract downloads its English language data on first use.
 - `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET` and `INBOUND_EMAIL_DOMAIN` enable email receipts. They can be supplied later without changing the integration code.
-- `NEXT_PUBLIC_APP_URL` is the application's public URL. Configure the matching `/auth/callback` URL in Supabase Auth. Google OAuth must be enabled in Supabase before its login button works. Supabase Auth sends account confirmation and magic-link emails.
+- `NEXT_PUBLIC_APP_URL` is the application's public URL. Configure the matching `/auth/callback` URL in Supabase Auth. Google OAuth is hidden unless NEXT_PUBLIC_GOOGLE_AUTH_ENABLED=true; enable the provider in Supabase first. Supabase Auth sends account confirmation and magic-link emails.
 
 The application creates no paid subscriptions and does not configure billing. Usage remains subject to the configured providers' free-tier limits.
 
@@ -44,9 +44,9 @@ The handler validates the raw body against the Svix headers, persists an idempot
 
 ## Processing and matching behaviour
 
-- Direct upload accepts PDF, PNG, JPEG and WebP files up to 10 MB and returns **202** once the file and parse job are persisted. The vault refreshes during processing; a running worker is required.
+- Direct upload accepts PDF, PNG, JPEG and WebP files up to 10 MB and returns **202** once the file and parse job are persisted. The vault refreshes during processing. Vercel uses Queues; local development uses npm run worker. Browser uploads go directly to private storage before server-side validation, bypassing Vercel's request-size limit.
 - Jobs retry five times with backoff. Interrupted jobs become eligible again after ten minutes. Failed extraction preserves the original file and flags the receipt for manual review. Missing dates/amounts are never invented.
-- CSV imports accept up to 10,000 rows / 5 MB. Select date order, currency and the sign convention explicitly. Identical transactions within one statement remain separate; repeating the statement is idempotent. Without a bank-provided transaction ID, identical rows in independently exported statements cannot always be distinguished.
+- CSV imports accept up to 10,000 rows / 4 MB. Select date order, currency and the sign convention explicitly. Identical transactions within one statement remain separate; repeating the statement is idempotent. Without a bank-provided transaction ID, identical rows in independently exported statements cannot always be distinguished.
 - Amounts are decimal, and currency must match. Exact matches require equal amounts, dates within three days, vendor score >= 0.95, extraction confidence >= 0.85 and a unique candidate on both sides. Ambiguous pairs require review. Fuzzy suggestions use an amount difference <= 0.02, dates within five days and vendor score > 0.75.
 - Confirmations and automatic matches update all three records atomically under an organisation lock. Database constraints prevent duplicate and cross-organisation reconciliation links. Dismissed pairs remain dismissed on later runs.
 - ZIP exports use the **reconciliation month**, with an exclusive next-month boundary. The CSV references unique original files; images keep their image extensions rather than being mislabelled as PDFs. Formula-like CSV text is escaped. Requests exceeding 200 receipts or 100 MB return a clear error rather than a partial archive.
@@ -78,4 +78,6 @@ This creates a demo organisation with 10 bank transactions and 8 PDF receipts: f
 
 All application database access goes through Prisma 6. `db:push` is intended for development schema setup and enables row-level security on the application tables; it grants no public Data API policies. Prisma uses the server's database connection and membership checks. Use reviewed Prisma migrations for production schema changes.
 
-Deploy the Next.js Node server and a separate persistent worker using the same environment. The worker needs network access to Supabase, Groq, Resend and Tesseract language data. Keep `receipts-vault` private. Do not deploy only a web process and expect queued jobs to run automatically.
+On Vercel, vercel.json configures a private Queues consumer and a daily recovery cron. The queue invokes saved jobs automatically, including extraction and reconciliation follow-ups. Set CRON_SECRET to a random value of at least 32 characters in Production. Hobby supports one daily recovery run; normal processing is triggered immediately by Queues. Enable Fluid compute and Node.js 22 or newer. The build regenerates Prisma 6. Keep receipts-vault private. Self-hosted/local installations still need npm run worker.
+
+After updating environment variables, redeploy. Run node scripts/check-deployment.mjs https://clerq-zeta.vercel.app to check public access controls and the signing secret without sending email. Vercel Queues is currently beta; monitor the queue and function logs during initial use.

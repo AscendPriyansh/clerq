@@ -1,0 +1,10 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run db:generate && npm run build",
+  "functions": {
+    "app/api/queues/jobs/route.ts": {
+      "experimentalTriggers": [{ "type": "queue/v2beta", "topic": "clerq-jobs" }]
+    }
+  },
+  "crons": [{ "path": "/api/cron/jobs", "schedule": "0 3 * * *" }]
+}

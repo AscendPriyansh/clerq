@@ -14,8 +14,8 @@ export function CsvUpload({ orgSlug, currency }: { orgSlug: string; currency: st
   const [mapping, setMapping] = useState<ColumnMap>({ dateCol: null, descriptionCol: null, amountCol: null, creditCol: null });
   const [message, setMessage] = useState("");
   const [pending, startTransition] = useTransition();
-  const { getRootProps, getInputProps } = useDropzone({ accept: { "text/csv": [".csv"] }, maxSize: 5 * 1024 * 1024, multiple: false, disabled: pending,
-    onDropRejected: () => setMessage("Choose one CSV file no larger than 5 MB."),
+  const { getRootProps, getInputProps } = useDropzone({ accept: { "text/csv": [".csv"] }, maxSize: 4 * 1024 * 1024, multiple: false, disabled: pending,
+    onDropRejected: () => setMessage("Choose one CSV file no larger than 4 MB."),
     onDrop: async files => {
       if (!files[0]) return;
       const parsed = Papa.parse<Record<string, string>>(await files[0].text(), { header: true, preview: 5, skipEmptyLines: true, transformHeader: value => value.trim() });
