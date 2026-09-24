@@ -2,11 +2,9 @@
 
 import Link from "next/link";
 import { useState, type FormEvent } from "react";
-import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 
 export function AuthForm({ mode, initialError }: { mode: "login" | "register"; initialError?: string }) {
-  const router = useRouter();
   const [message, setMessage] = useState(initialError ?? "");
   const [busy, setBusy] = useState(false);
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -32,14 +30,14 @@ export function AuthForm({ mode, initialError }: { mode: "login" | "register"; i
         if (password.length < 8) throw new Error("Use a password of at least 8 characters.");
         const { data, error } = await supabase.auth.signUp({ email, password, options: { data: { name: String(values.get("name") ?? "").trim() }, emailRedirectTo: callback } });
         if (error) throw error;
-        if (data.session) { router.replace("/onboarding"); router.refresh(); }
+        if (data.session) { window.location.replace("/onboarding"); }
         else setMessage("Check your email to confirm your account, then sign in to create your organisation.");
       } else {
         if (!email || !password) throw new Error("Enter your email address and password.");
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
-        router.replace("/dashboard");
-        router.refresh();
+        // Discard routes prefetched before authentication, including login redirects.
+        window.location.replace("/dashboard");
       }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Sign-in failed. Try again.");

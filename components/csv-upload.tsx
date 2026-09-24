@@ -22,11 +22,17 @@ export function CsvUpload({ orgSlug, currency }: { orgSlug: string; currency: st
     },
   });
   return <section className="space-y-3 rounded border p-4"><h3 className="font-semibold">Import bank statement</h3><div {...getRootProps()} className="cursor-pointer rounded border border-dashed p-6"><input {...getInputProps()} aria-label="Choose bank CSV" />{file?.name ?? "Drop a CSV here or click to choose"}</div>
-    {file && <form className="grid gap-3 sm:grid-cols-2" action={form => {
+    {file && <form className="grid gap-3 sm:grid-cols-2" onSubmit={event => {
+      event.preventDefault();
+      if (pending) return;
+      // Retain mapping, currency and date/sign choices after importing the selected file.
+      const form = new FormData(event.currentTarget);
       form.set("file", file); Object.entries(mapping).forEach(([key, value]) => form.set(key, value ?? ""));
       startTransition(async () => {
-        const result = await importBankStatementCSV(form, orgSlug);
-        setMessage("error" in result ? result.error ?? "Import failed." : `Imported ${result.imported} transactions, skipped ${result.skipped} duplicates, ${result.invalid} invalid rows. ${result.errors.map(row => `Row ${row.row}: ${row.error}`).join(" ")}`);
+        try {
+          const result = await importBankStatementCSV(form, orgSlug);
+          setMessage("error" in result ? result.error ?? "Import failed." : `Imported ${result.imported} transactions, skipped ${result.skipped} duplicates, ${result.invalid} invalid rows. ${result.errors.map(row => `Row ${row.row}: ${row.error}`).join(" ")}`);
+        } catch { setMessage("Unable to import the statement. Check your connection and try again."); }
       });
     }}>
       {(Object.keys(mapping) as (keyof ColumnMap)[]).map(key => <label key={key}>{({ dateCol: "Date", descriptionCol: "Description", amountCol: "Amount / debit", creditCol: "Credit (optional)" })[key]}<select className="mt-1 block w-full rounded border p-2" value={mapping[key] ?? ""} onChange={event => setMapping({ ...mapping, [key]: event.target.value || null })} required={key !== "creditCol"}><option value="">Choose column</option>{headers.map(header => <option key={header}>{header}</option>)}</select></label>)}
