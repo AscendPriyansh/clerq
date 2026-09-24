@@ -13,6 +13,7 @@
     "db:push": "node scripts/prisma.mjs db push",
     "db:secure": "node scripts/secure-db.mjs",
     "test": "jest --runInBand",
+    "test:ocr:built": "node --import tsx scripts/test-built-ocr.ts",
     "worker": "node --conditions=react-server --import tsx scripts/worker.ts",
     "db:seed": "node --conditions=react-server --import tsx prisma/seed.ts",
     "storage:setup": "node scripts/setup-storage.mjs",

@@ -20,6 +20,9 @@ test("startup timeout terminates a worker that never becomes ready", async () =>
 });
 test("successful recognition returns text and cleans up the worker", async () => {
   const result = recogniseReceipt(Buffer.from("image"));
+  const options = (Worker as unknown as jest.Mock).mock.calls[0][1];
+  const wrapped = structuredClone({ ...options.workerData, __turbopack_globals__: {} });
+  expect(Buffer.from(wrapped.image).toString()).toBe("image");
   worker.emit("message", { type: "result", text: "Stripe 100.00" });
   await expect(result).resolves.toBe("Stripe 100.00");
   jest.runAllTimers();

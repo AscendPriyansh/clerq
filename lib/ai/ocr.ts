@@ -7,7 +7,9 @@ export function recogniseReceipt(buffer: Buffer, timeoutMs = 90000): Promise<str
   return new Promise((resolve, reject) => {
     const started = Date.now();
     const worker = new Worker(join(process.cwd(), "lib/ai/ocr-worker.cjs"), {
-      workerData: buffer, execArgv: [],
+      // Keep bytes nested: Next's worker wrapper spreads workerData to attach
+      // runtime metadata, which destroys a top-level Buffer's typed-array shape.
+      workerData: { image: buffer }, execArgv: [],
     });
     let settled = false;
     let stage = "starting";
