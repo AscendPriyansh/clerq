@@ -1,3 +1,5 @@
+export const metadata = { title: "Reconcile" };
+
 import { requireMembership } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getSuggestions } from "@/lib/reconciliation/matcher";
@@ -24,12 +26,12 @@ export default async function Reconcile({ params, searchParams }: { params: Prom
   ]);
   const suggestedTransactions = new Set(suggestions.map(pair => pair.bankTransactionId));
   const path = `/dashboard/${orgSlug}/reconcile`;
-  return <><h2 className="text-2xl font-semibold">Reconcile</h2><ReconciliationCockpit orgSlug={orgSlug}
+  return <div className="workspace-page"><ReconciliationCockpit orgSlug={orgSlug}
     transactions={transactions.slice(0, PAGE_SIZE).map(row => ({ id: row.id, date: row.transactionDate.toISOString().slice(0, 10), name: row.counterpartyName, amount: row.amount.toString(), currency: row.currency, status: row.isReconciled ? "RECONCILED" : suggestedTransactions.has(row.id) ? "SUGGESTED" : "MISSING_RECEIPT" }))}
     receipts={receipts.slice(0, PAGE_SIZE).map(row => ({ id: row.id, date: row.transactionDate?.toISOString().slice(0, 10) ?? "", name: row.vendorName ?? "Awaiting extraction", amount: row.totalAmount?.toString() ?? "—", currency: row.currency, status: row.status, category: row.category }))}
     suggestions={suggestions.slice((suggestionPage - 1) * PAGE_SIZE, suggestionPage * PAGE_SIZE)} suggestionCount={suggestions.length}
     bankPagination={<PageLinks path={path} params={query} pageKey="bankPage" page={bankPage} hasNext={transactions.length > PAGE_SIZE} label="Bank transactions" />}
     receiptPagination={<PageLinks path={path} params={query} pageKey="receiptPage" page={receiptPage} hasNext={receipts.length > PAGE_SIZE} label="Receipts" />}
     suggestionPagination={<PageLinks path={path} params={query} pageKey="suggestionPage" page={suggestionPage} hasNext={suggestions.length > suggestionPage * PAGE_SIZE} label="Suggestions" />}
-  /></>;
+  /></div>;
 }

@@ -50,7 +50,7 @@ export async function parseReceiptWithGroq(fileBuffer: Buffer, mimeType: string)
     return ExtractedReceiptSchema.parse(JSON.parse(raw));
   } catch (error) {
     const detail = error instanceof Error ? error.message.replaceAll(process.env.GROQ_API_KEY || "__no_key__", "[redacted]").slice(0, 500) : "Unknown error";
-    console.error("AI receipt extraction failed", { error: error instanceof Error ? error.name : "UnknownError", detail, rawResponse: raw });
+    console.error("AI receipt extraction failed", { error: error instanceof Error ? error.name : "UnknownError", detail });
     throw new Error("Receipt extraction failed; manual review required");
   }
 }

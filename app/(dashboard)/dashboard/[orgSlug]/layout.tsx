@@ -1,14 +1,17 @@
-import Link from "next/link";
-import { NavigationFeedback } from "@/components/navigation-feedback";
+import { WorkspaceNavigation } from "@/components/workspace-navigation";
 import { requireMembership } from "@/lib/auth";
 import { SignOut } from "@/components/sign-out";
 
 export default async function DashboardLayout({ children, params }: { children: React.ReactNode; params: Promise<{ orgSlug: string }> }) {
   const { orgSlug } = await params;
   const { organization } = await requireMembership(orgSlug);
-  const links = [["Overview", ""], ["Reconcile", "/reconcile"], ["Receipts", "/receipts"], ["Transactions", "/transactions"], ["Settings", "/settings"]];
-  return <div className="min-h-screen md:flex">
-    <aside className="space-y-5 border-r p-6 md:w-60"><h1 className="text-xl font-semibold">Clerq</h1><p className="break-words">{organization.name}</p><nav aria-label="Workspace" className="flex flex-wrap gap-3 md:flex-col">{links.map(([label, suffix]) => <Link key={label} className="underline" href={`/dashboard/${orgSlug}${suffix}`}>{label}<NavigationFeedback /></Link>)}</nav><SignOut /></aside>
-    <main className="min-w-0 flex-1 space-y-5 p-6">{children}</main>
+  return <div className="workspace-shell">
+    <aside className="workspace-sidebar">
+      <div className="workspace-brand"><span className="brand-mark brand-mark-small" aria-hidden="true"><span /></span><span>Clerq</span></div>
+      <div className="workspace-org"><p className="workspace-eyebrow">WORKSPACE</p><p>{organization.name}</p></div>
+      <WorkspaceNavigation orgSlug={orgSlug} />
+      <div className="workspace-sidebar-footer"><div className="workspace-secure-note"><span className="workspace-secure-dot" aria-hidden="true" />Private workspace</div><SignOut /></div>
+    </aside>
+    <main id="main-content" className="workspace-main space-y-5">{children}</main>
   </div>;
 }
